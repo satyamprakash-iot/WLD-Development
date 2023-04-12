@@ -1,0 +1,200 @@
+#define TINY_GSM_MODEM_SIM800
+#include <TinyGsmClient.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+
+// #include "Sensors.h"
+
+#define SerialAT Serial1
+#define TINY_GSM_DEBUG SerialMon
+#define TINY_GSM_USE_GPRS true
+#define did "10008"
+#define type "swM"
+int intDid = atoi(did);
+#define TINY_GSM_USE_GPRS true
+#define TINY_GSM_USE_WIFI false
+#define GSM_PIN ""
+const char apn[] = "iot.com";
+const char gprsUser[] = "";
+const char gprsPass[] = "";
+
+#define MODEM_TX 27
+#define MODEM_RX 26
+
+#define SerialAT Serial1
+#define SerialMon Serial
+
+int Mode = 0; // 0 - Duration based, 1 - Realtime
+int cmd = 0;
+int count = 0;
+int attemptCounter = 1;
+bool attemptPublish = 1;
+
+const char *mqtt_broker = "13.126.240.184";
+const char *topicMeta = "devices/meta/request/10008";
+const char *rev = "devices/meta/response/10008";
+const char *topic = "devices/latest/10008";
+const char *led = "devices/get/10008"; // get/10002";
+const char *logs = "devices/10008/logs";
+const char *mqtt_username = "saaf";
+const char *mqtt_password = "goaisthebest";
+const int mqtt_port = 1883;
+const char *metaMessage = "{\"type\":\"swM\",\"deviceid\":10010,\"msg\":\"dev baro des deu\"}";
+
+TinyGsm modem(SerialAT);
+TinyGsmClient GSMclient(modem);
+
+void callback(char *topic, byte *payload, unsigned int length);
+PubSubClient client(mqtt_broker, mqtt_port, callback, GSMclient);
+
+DynamicJsonDocument doc(4096);
+DynamicJsonDocument doc1(4096);
+static char msg1[4096];
+
+int wqs = 404;
+
+unsigned long durationSendTime, nowTime;
+unsigned long durationPrevTime = 0;
+
+
+const int trigPin = 9;
+const int echoPin = 10;
+long duration;
+int distance;
+
+void setup()
+{
+   
+  SerialAT.begin(9600, SERIAL_8N1, MODEM_RX, MODEM_TX);
+  Serial.begin(115200);  
+  pinMode(trigPin, OUTPUT); // Sets the trigPin as an Output
+  pinMode(echoPin, INPUT); // Sets the echoPin as an Input 
+
+  modem.restart();
+  String modemInfo = modem.getModemInfo();
+  Serial.print("Modem: ");
+  Serial.println(modemInfo);
+  delay(500);
+  
+  #if TINY_GSM_USE_GPRS
+  if (GSM_PIN && modem.getSimStatus() != 3)
+  {
+    modem.simUnlock(GSM_PIN);
+  }
+#endif
+
+  Serial.print("Waiting for network...");
+  if (!modem.waitForNetwork())
+  {
+    Serial.println(" fail");
+    delay(10000);
+    return;
+  }
+  Serial.println(" success");
+
+  if (modem.isNetworkConnected())
+  {
+    Serial.println("Network connected");
+  }
+
+   
+  // GPRS connection parameters are usually set after network registration
+  Serial.print(F("Connecting to "));
+  Serial.print(apn);
+  if (!modem.gprsConnect(apn, gprsUser, gprsPass))
+  {
+    Serial.println(" fail");
+    delay(10000);
+    return;
+  }
+  Serial.println(" success");
+
+  if (modem.isGprsConnected())
+  {
+    Serial.println("GPRS connected");
+    client.setServer(mqtt_broker, mqtt_port);
+    client.setCallback(callback);
+    if (client.connect(did, mqtt_username, mqtt_password))
+    {
+      Serial.println("SUCCESSFULLY CONNECTED TO SAAFWATER SERVER");
+    }
+    else
+    {
+      Serial.print("FAILED TO CONNECT WITH ERROR CODE: ");
+      Serial.print(client.state());
+      vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+    client.subscribe(rev);
+    if (client.publish(topicMeta, metaMessage))
+    {
+      Serial.println("PUBLISHED DATA");
+    }
+    else
+    {
+      Serial.println("FAILED TO PUBLISH DATA");
+    }
+    Serial.println("WAITING FOR A RESPONSE FROM SAAFWATER SERVER");
+    for (int i = 0; i < 40; i++)
+    {
+      client.loop();
+      vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+  }
+}
+
+
+void loop()
+{
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2); // Sets the trigPin on HIGH state for 10 micro seconds
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW); // Reads the echoPin, returns the sound wave travel time in microseconds
+  duration = pulseIn(echoPin, HIGH); // Calculating the distance
+  distance = duration * 0.034 / 2; // Prints the distance on the Serial Monitor
+  Serial.print("Distance: ");
+  Serial.println(distance);
+  
+  
+  serializeJson(doc, msg1, 4096);
+  Serial.println(msg1);
+  attemptPublish = 1;
+  attemptCounter = 0;
+  while (attemptPublish == 1 && attemptCounter < 10)
+  {
+    Serial.println("ATTEMPTING TO CONNECT TO SAAFWATER SERVER");
+    modem.gprsConnect(apn, gprsUser, gprsPass);
+    if (client.connect(did, mqtt_username, mqtt_password))
+    {
+      Serial.println("SUCCESSFULLY CONNECTED TO SAAFWATER SERVER");
+    }
+    else
+    {
+      Serial.print("FAILED TO CONNECT WITH ERROR CODE: ");
+      Serial.print(client.state());
+      vTaskDelay(2000 / portTICK_PERIOD_MS);
+    }
+    Serial.print("------- ATTEMPT #");
+    Serial.println(attemptCounter);
+    client.subscribe(led);
+    if (client.publish(topic, msg1))
+    {
+      Serial.println("PUBLISHED DATA");
+    }
+    else
+    {
+      Serial.println("FAILED TO PUBLISH DATA");
+    }
+    Serial.println("WAITING FOR A RESPONSE FROM SAAFWATER SERVER");
+    for (int i = 0; i < 40; i++)
+    {
+      client.loop();
+      vTaskDelay(500 / portTICK_PERIOD_MS);
+    }
+    attemptCounter++;
+  }
+}
+  
+
+  
+  
